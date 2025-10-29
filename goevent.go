@@ -61,7 +61,7 @@ func (ge *GoEvent) registerSingleListener(listener Listener) {
 
 	// Create a wrapper function that matches EventBus signature
 	// and handles error collection for both handle and global errors
-	handler := func(args ...interface{}) {
+	handler := func(args ...any) {
 		if len(args) < 2 {
 			return
 		}
@@ -96,7 +96,7 @@ func (ge *GoEvent) registerSingleListener(listener Listener) {
 		ge.asyncListenersMu.Unlock()
 
 		// Wrap async handler with WaitGroup tracking
-		asyncHandler := func(args ...interface{}) {
+		asyncHandler := func(args ...any) {
 			// Extract handle to decrement its WaitGroup too
 			if len(args) >= 1 {
 				if handle, ok := args[0].(*DispatchHandle); ok {

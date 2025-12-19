@@ -77,8 +77,8 @@ func TestNew(t *testing.T) {
 	if evt == nil {
 		t.Fatal("New() returned nil")
 	}
-	if evt.bus == nil {
-		t.Error("EventBus not initialized")
+	if evt.driver == nil {
+		t.Error("Driver not initialized")
 	}
 	if evt.errors == nil {
 		t.Error("Errors slice not initialized")

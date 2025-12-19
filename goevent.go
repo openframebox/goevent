@@ -1,30 +1,43 @@
 // Package goevent provides a type-safe, flexible event bus wrapper for Go.
 //
-// GoEvent wraps the EventBus library with enhanced features:
+// GoEvent supports two drivers:
+//   - Memory driver (default): In-memory EventBus for same-process communication
+//   - Redis driver: Redis pub/sub for distributed multi-process/multi-server communication
+//
+// Features:
 //   - Type-safe interfaces instead of reflection-based handlers
 //   - Configurable sync/async execution per listener
 //   - Per-event waiting with DispatchHandle
 //   - Built-in error collection and reporting
 //   - Thread-safe operations with proper synchronization
 //
-// Basic usage:
+// Basic usage (memory driver):
 //
 //	bus := goevent.New()
 //	bus.RegisterListener(&MyListener{})
 //	handle := bus.Dispatch(&MyEvent{})
 //	handle.Wait()  // Wait for completion
+//
+// Distributed usage (Redis driver):
+//
+//	bus := goevent.NewWithConfig(&goevent.Config{
+//	    Driver: goevent.DriverRedis,
+//	    Redis: &goevent.RedisConfig{
+//	        Addr: "localhost:6379",
+//	    },
+//	})
+//	bus.RegisterListener(&MyListener{})
+//	handle := bus.Dispatch(&MyEvent{})
 package goevent
 
 import (
 	"fmt"
 	"sync"
-
-	"github.com/asaskevich/EventBus"
 )
 
-// GoEvent is a wrapper around EventBus with enhanced error handling and synchronization
+// GoEvent is a type-safe event bus with pluggable drivers
 type GoEvent struct {
-	bus              EventBus.Bus
+	driver           Driver
 	wg               sync.WaitGroup
 	errorsMu         sync.Mutex
 	errors           []*EventError
@@ -32,10 +45,39 @@ type GoEvent struct {
 	asyncListeners   map[string]int // tracks count of async listeners per event
 }
 
-// New creates a new GoEvent instance
+// New creates a new GoEvent instance with the default in-memory driver
+// This provides backward compatibility with existing code
 func New() *GoEvent {
+	return NewWithConfig(nil)
+}
+
+// NewWithConfig creates a new GoEvent instance with custom configuration
+// If cfg is nil, defaults to memory driver
+func NewWithConfig(cfg *Config) *GoEvent {
+	if cfg == nil {
+		cfg = &Config{Driver: DriverMemory}
+	}
+
+	var driver Driver
+	var err error
+
+	switch cfg.Driver {
+	case DriverRedis:
+		if cfg.Redis == nil {
+			panic("Redis driver requires RedisConfig")
+		}
+		driver, err = newRedisDriver(cfg.Redis)
+		if err != nil {
+			panic(fmt.Sprintf("failed to create Redis driver: %v", err))
+		}
+	case DriverMemory:
+		fallthrough
+	default:
+		driver = newMemoryDriver()
+	}
+
 	return &GoEvent{
-		bus:            EventBus.New(),
+		driver:         driver,
 		errors:         make([]*EventError, 0),
 		asyncListeners: make(map[string]int),
 	}
@@ -59,21 +101,8 @@ func (ge *GoEvent) registerSingleListener(listener Listener) {
 
 	eventName := listener.EventName()
 
-	// Create a wrapper function that matches EventBus signature
-	// and handles error collection for both handle and global errors
-	handler := func(args ...any) {
-		if len(args) < 2 {
-			return
-		}
-
-		// Extract dispatch handle and event from args
-		handle, okHandle := args[0].(*DispatchHandle)
-		event, okEvent := args[1].(Event)
-
-		if !okHandle || !okEvent {
-			return
-		}
-
+	// Create normalized EventHandler
+	handler := func(handle *DispatchHandle, event Event) {
 		// Call the listener's OnEvent handler
 		if err := listener.OnEvent(event); err != nil {
 			eventError := &EventError{
@@ -88,41 +117,41 @@ func (ge *GoEvent) registerSingleListener(listener Listener) {
 		}
 	}
 
-	// Subscribe based on async flag
+	// Track async listener count for this event
 	if isAsync {
-		// Track async listener count for this event
 		ge.asyncListenersMu.Lock()
 		ge.asyncListeners[eventName]++
 		ge.asyncListenersMu.Unlock()
 
 		// Wrap async handler with WaitGroup tracking
-		asyncHandler := func(args ...any) {
-			// Extract handle to decrement its WaitGroup too
-			if len(args) >= 1 {
-				if handle, ok := args[0].(*DispatchHandle); ok {
-					defer handle.wg.Done()
-				}
-			}
-			defer ge.wg.Done() // Global WaitGroup was incremented during Dispatch
-			handler(args...)
+		wrappedHandler := func(handle *DispatchHandle, event Event) {
+			defer handle.wg.Done()
+			defer ge.wg.Done()
+			handler(handle, event)
 		}
-		ge.bus.SubscribeAsync(eventName, asyncHandler, false)
+
+		ge.driver.Subscribe(eventName, wrappedHandler, true)
 	} else {
 		// Synchronous subscription
-		ge.bus.Subscribe(eventName, handler)
+		ge.driver.Subscribe(eventName, handler, false)
 	}
 }
 
 // Dispatch publishes an event to all registered listeners and returns a handle
 // The handle can be used to wait for this specific dispatch to complete
 // and retrieve errors that occurred during this dispatch
+//
+// For memory driver: Wait() blocks until all handlers complete
+// For Redis driver: Wait() only blocks for LOCAL handlers (not remote processes)
 func (ge *GoEvent) Dispatch(event Event) *DispatchHandle {
 	eventName := event.Name()
 
 	// Create a dispatch handle for this specific dispatch
 	handle := &DispatchHandle{
-		errors: make([]*EventError, 0),
-		done:   make(chan struct{}),
+		id:      generateHandleID(),
+		isLocal: ge.isMemoryDriver(),
+		errors:  make([]*EventError, 0),
+		done:    make(chan struct{}),
 	}
 
 	// Check if there are async listeners for this event
@@ -136,8 +165,21 @@ func (ge *GoEvent) Dispatch(event Event) *DispatchHandle {
 		handle.wg.Add(asyncCount) // Handle-specific wait group
 	}
 
-	// Publish the event with the handle as first argument
-	ge.bus.Publish(eventName, handle, event)
+	// Publish the event via driver
+	if err := ge.driver.Publish(eventName, handle, event); err != nil {
+		// If publish fails, record the error immediately
+		publishError := &EventError{
+			EventName:    eventName,
+			ListenerType: "publisher",
+			Err:          fmt.Errorf("failed to publish: %w", err),
+		}
+		handle.recordError(publishError)
+		ge.recordError(publishError)
+
+		// Mark handle as done immediately since publish failed
+		handle.markDone()
+		return handle
+	}
 
 	// Start a goroutine to mark the handle as done when complete
 	go func() {
@@ -177,4 +219,18 @@ func (ge *GoEvent) recordError(err *EventError) {
 	ge.errorsMu.Lock()
 	defer ge.errorsMu.Unlock()
 	ge.errors = append(ge.errors, err)
+}
+
+// Close cleanly shuts down the event bus and releases resources
+// This should be called when the event bus is no longer needed
+// It waits for all pending handlers to complete before closing
+func (ge *GoEvent) Close() error {
+	ge.Wait()
+	return ge.driver.Close()
+}
+
+// isMemoryDriver returns true if using the memory driver
+func (ge *GoEvent) isMemoryDriver() bool {
+	_, ok := ge.driver.(*memoryDriver)
+	return ok
 }

@@ -1,6 +1,8 @@
 package goevent
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"sync"
 )
@@ -19,6 +21,8 @@ func (e *EventError) Error() string {
 // DispatchHandle represents a handle to a specific event dispatch
 // It allows waiting for and collecting errors from that specific dispatch
 type DispatchHandle struct {
+	id       string // Unique identifier for this dispatch
+	isLocal  bool   // true for memory driver, false for Redis (affects Wait behavior)
 	wg       sync.WaitGroup
 	errorsMu sync.Mutex
 	errors   []*EventError
@@ -56,4 +60,14 @@ func (dh *DispatchHandle) recordError(err *EventError) {
 // markDone signals that all handlers have completed
 func (dh *DispatchHandle) markDone() {
 	close(dh.done)
+}
+
+// generateHandleID creates a unique identifier for a dispatch handle
+func generateHandleID() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to timestamp-based ID if random fails
+		return fmt.Sprintf("%d", new(int))
+	}
+	return hex.EncodeToString(b)
 }

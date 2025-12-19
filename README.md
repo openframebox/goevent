@@ -13,12 +13,36 @@ A **type-safe, flexible event bus** for Go, providing an elegant wrapper around 
 🚨 **Error Collection**: Built-in error tracking and reporting
 🔧 **Simple API**: Minimal boilerplate, maximum flexibility
 ✅ **Production Ready**: Thread-safe with proper synchronization
+🌐 **Distributed Support**: Redis driver for multi-process/multi-server event handling
 
 ## Installation
 
 ```bash
 go get github.com/openframebox/goevent
 ```
+
+## Drivers
+
+GoEvent supports two drivers for different use cases:
+
+### Memory Driver (Default)
+The default in-memory driver uses EventBus for same-process communication:
+- ✅ Zero configuration required
+- ✅ High performance (no network overhead)
+- ✅ Full DispatchHandle tracking
+- ✅ Support for all Go types
+
+### Redis Driver (Distributed)
+For distributed event handling across multiple processes or servers:
+- ✅ Multi-process/multi-server support
+- ✅ Redis pub/sub for reliable delivery
+- ✅ JSON serialization for cross-language compatibility
+- ⚠️ Local-only DispatchHandle tracking
+- ⚠️ Requires event type registration
+
+**When to use each:**
+- **Memory Driver**: Single-process applications, high-performance requirements, complex payloads
+- **Redis Driver**: Microservices, distributed systems, worker pools, multi-server deployments
 
 ## Quick Start
 
@@ -66,6 +90,175 @@ func main() {
 
     fmt.Println("Done!")
 }
+```
+
+## Redis Driver Usage
+
+### Basic Configuration
+
+```go
+package main
+
+import (
+    "fmt"
+    "github.com/openframebox/goevent"
+)
+
+// 1. Register event types (required for Redis driver)
+func init() {
+    goevent.RegisterEventType(&UserRegisteredEvent{})
+}
+
+// 2. Define your event (must be JSON-serializable)
+type UserRegisteredEvent struct {
+    UserID string `json:"user_id"`
+}
+
+func (e *UserRegisteredEvent) Name() string {
+    return "user.registered"
+}
+
+func (e *UserRegisteredEvent) Payload() map[string]any {
+    return map[string]any{"user_id": e.UserID}
+}
+
+// 3. Configure Redis driver
+func main() {
+    evt := goevent.NewWithConfig(&goevent.Config{
+        Driver: goevent.DriverRedis,
+        Redis: &goevent.RedisConfig{
+            Addr:     "localhost:6379",
+            Password: "",  // Leave empty if no password
+            DB:       0,
+        },
+    })
+    defer evt.Close() // Always close to cleanup connections
+
+    // Register listeners (same as memory driver)
+    evt.RegisterListener(&EmailNotifier{})
+
+    // Dispatch events (same API)
+    handle := evt.Dispatch(&UserRegisteredEvent{UserID: "user123"})
+    handle.Wait()
+
+    fmt.Println("Done!")
+}
+```
+
+### Multi-Process Example
+
+**Process 1 (Publisher):**
+```go
+func main() {
+    evt := goevent.NewWithConfig(&goevent.Config{
+        Driver: goevent.DriverRedis,
+        Redis:  &goevent.RedisConfig{Addr: "localhost:6379"},
+    })
+    defer evt.Close()
+
+    // Publish events - will be received by all subscribers
+    evt.Dispatch(&OrderCreatedEvent{OrderID: "123"})
+}
+```
+
+**Process 2 (Subscriber):**
+```go
+func main() {
+    evt := goevent.NewWithConfig(&goevent.Config{
+        Driver: goevent.DriverRedis,
+        Redis:  &goevent.RedisConfig{Addr: "localhost:6379"},
+    })
+    defer evt.Close()
+
+    // Register listeners - will receive events from all publishers
+    evt.RegisterListener(&OrderProcessor{})
+    evt.RegisterListener(&EmailSender{})
+
+    // Keep process running
+    select {}
+}
+```
+
+### Redis Configuration Options
+
+```go
+evt := goevent.NewWithConfig(&goevent.Config{
+    Driver: goevent.DriverRedis,
+    Redis: &goevent.RedisConfig{
+        // Connection
+        Addr:     "localhost:6379",
+        Password: "your-password",
+        DB:       0,
+
+        // Pub/Sub
+        ChannelPrefix: "myapp:",  // Prefix for Redis channels (default: "goevent:")
+
+        // Performance
+        MaxEventSize: 1024 * 1024,  // Max event size in bytes (default: 1MB)
+        PoolSize:     10,           // Connection pool size (default: 10)
+        MinIdleConns: 5,            // Min idle connections (default: 0)
+
+        // Timeouts
+        DialTimeout:  5 * time.Second,
+        ReadTimeout:  3 * time.Second,
+        WriteTimeout: 3 * time.Second,
+
+        // TLS (optional)
+        TLSConfig: &tls.Config{...},
+    },
+})
+```
+
+### Important: Event Registration
+
+**All event types MUST be registered** when using the Redis driver:
+
+```go
+func init() {
+    // Register all event types used in your application
+    goevent.RegisterEventType(&UserCreatedEvent{})
+    goevent.RegisterEventType(&OrderProcessedEvent{})
+    goevent.RegisterEventType(&PaymentReceivedEvent{})
+}
+```
+
+Without registration, deserialization will fail with a clear error message.
+
+### Redis Driver Limitations
+
+1. **Local-Only DispatchHandle Tracking**
+   - `handle.Wait()` only waits for LOCAL handlers in the current process
+   - Remote handlers in other processes are not tracked
+   - Use for synchronization within a process, not across processes
+
+2. **Local-Only Error Collection**
+   - `handle.GetErrors()` only returns errors from LOCAL handlers
+   - Errors from remote processes are not collected
+   - Use centralized logging for distributed error tracking
+
+3. **JSON Serialization Requirements**
+   - Event payloads must be JSON-serializable
+   - Complex types (functions, channels, unexported fields) are not supported
+   - Use struct tags for custom field names: `json:"field_name"`
+
+4. **Network Latency**
+   - Redis driver adds network overhead vs in-memory
+   - Typical latency: 1-5ms depending on network
+   - Use for distributed systems where latency is acceptable
+
+### Switching Between Drivers
+
+The API is identical for both drivers - just change the configuration:
+
+```go
+// Development: use memory driver
+evt := goevent.New()
+
+// Production: use Redis driver
+evt := goevent.NewWithConfig(&goevent.Config{
+    Driver: goevent.DriverRedis,
+    Redis:  &goevent.RedisConfig{Addr: os.Getenv("REDIS_ADDR")},
+})
 ```
 
 ## Usage Examples
@@ -258,12 +451,61 @@ type ListenerOptions struct {
 ### GoEvent Methods
 
 ```go
-func New() *GoEvent
+// Constructors
+func New() *GoEvent  // Creates with memory driver (backward compatible)
+func NewWithConfig(cfg *Config) *GoEvent  // Creates with custom driver
+
+// Core methods
 func (ge *GoEvent) RegisterListener(listeners ...Listener)
 func (ge *GoEvent) Dispatch(event Event) *DispatchHandle
 func (ge *GoEvent) Wait()
 func (ge *GoEvent) GetErrors() []*EventError
 func (ge *GoEvent) ClearErrors()
+func (ge *GoEvent) Close() error  // Cleanup resources (important for Redis driver)
+```
+
+### Configuration Types
+
+```go
+type Config struct {
+    Driver DriverType    // DriverMemory or DriverRedis
+    Redis  *RedisConfig  // Required when Driver is DriverRedis
+}
+
+type DriverType string
+const (
+    DriverMemory DriverType = "memory"
+    DriverRedis  DriverType = "redis"
+)
+
+type RedisConfig struct {
+    // Connection
+    Addr     string
+    Password string
+    DB       int
+
+    // Pub/Sub
+    ChannelPrefix string  // Default: "goevent:"
+
+    // Performance
+    MaxEventSize int      // Default: 1MB
+    PoolSize     int      // Default: 10
+    MinIdleConns int      // Default: 0
+
+    // Timeouts
+    DialTimeout  time.Duration  // Default: 5s
+    ReadTimeout  time.Duration  // Default: 3s
+    WriteTimeout time.Duration  // Default: 3s
+
+    // TLS (optional)
+    TLSConfig *tls.Config
+}
+```
+
+### Event Registration (Redis Driver)
+
+```go
+func RegisterEventType(event Event)  // Register event type for deserialization
 ```
 
 ### DispatchHandle Methods

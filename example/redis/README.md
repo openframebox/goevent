@@ -1,6 +1,13 @@
 # GoEvent Redis Example
 
-This example demonstrates distributed event handling using the Redis driver.
+This example demonstrates distributed event handling using the Redis driver, including **cross-service communication** support.
+
+## Key Features Demonstrated
+
+1. **Distributed Events**: Events published by one process are received by listeners in other processes
+2. **Cross-Service Compatible**: Uses `event.Name()` as registry key, enabling different services (different codebases) to communicate
+3. **Type-Safe Deserialization**: Events are automatically deserialized to the correct Go types
+4. **Async Listeners**: EmailSender runs asynchronously
 
 ## Prerequisites
 

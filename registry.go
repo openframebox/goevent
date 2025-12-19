@@ -23,22 +23,45 @@ var globalRegistry = &EventRegistry{
 // This must be called for all event types when using the Redis driver
 // Typically called in init() functions
 //
+// The event.Name() is used as the registry key, enabling cross-service communication
+// where different services can have the same logical event with different package names.
+//
 // Example:
 //
 //	func init() {
 //	    goevent.RegisterEventType(&UserCreatedEvent{})
+//	    // Registers with key from event.Name(), e.g., "user.created"
 //	}
 func RegisterEventType(event Event) {
-	globalRegistry.Register(event)
+	globalRegistry.RegisterAs(event.Name(), event)
 }
 
-// Register adds an event type to the registry
+// RegisterEventTypeAs registers an event type with a custom type name
+// This allows explicit control over the registry key, useful for:
+// - Event versioning (e.g., "order.created.v1")
+// - Custom naming conventions
+// - Migrating between naming schemes
+//
+// Example:
+//
+//	func init() {
+//	    goevent.RegisterEventTypeAs("order.created.v1", &OrderCreatedEvent{})
+//	}
+func RegisterEventTypeAs(typeName string, event Event) {
+	globalRegistry.RegisterAs(typeName, event)
+}
+
+// Register adds an event type to the registry using event.Name() as the key
+// Deprecated: Use RegisterEventType() instead
 func (er *EventRegistry) Register(event Event) {
+	er.RegisterAs(event.Name(), event)
+}
+
+// RegisterAs adds an event type to the registry with a custom type name
+func (er *EventRegistry) RegisterAs(typeName string, event Event) {
 	er.mu.Lock()
 	defer er.mu.Unlock()
 
-	// Use the type name as the key
-	typeName := fmt.Sprintf("%T", event)
 	eventType := reflect.TypeOf(event)
 
 	// If it's a pointer, get the element type

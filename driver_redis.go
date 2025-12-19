@@ -116,7 +116,7 @@ func (rd *redisDriver) Publish(eventName string, handle *DispatchHandle, event E
 	// Create message
 	msg := redisMessage{
 		EventName: eventName,
-		EventType: fmt.Sprintf("%T", event),
+		EventType: event.Name(), // Use event.Name() for cross-service compatibility
 		EventData: eventData,
 		HandleID:  handle.id,
 		Timestamp: time.Now().Unix(),

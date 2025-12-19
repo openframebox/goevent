@@ -179,6 +179,72 @@ func main() {
 }
 ```
 
+### Cross-Service Communication (Different Codebases)
+
+The Redis driver supports **true cross-service communication** where different services can have their own event definitions:
+
+**Service A (Order Service):**
+```go
+package main
+
+import "github.com/openframebox/goevent"
+
+type OrderCreatedEvent struct {
+    OrderID string `json:"order_id"`
+}
+
+func (e *OrderCreatedEvent) Name() string {
+    return "order.created"  // Key for cross-service compatibility
+}
+
+func init() {
+    goevent.RegisterEventType(&OrderCreatedEvent{})
+}
+
+func main() {
+    evt := goevent.NewWithConfig(&goevent.Config{
+        Driver: goevent.DriverRedis,
+        Redis:  &goevent.RedisConfig{Addr: "redis:6379"},
+    })
+
+    evt.Dispatch(&OrderCreatedEvent{OrderID: "123"})
+}
+```
+
+**Service B (Email Service - completely different codebase):**
+```go
+package main
+
+import "github.com/openframebox/goevent"
+
+// Same logical event, different package, SAME Name()
+type OrderCreatedEvent struct {
+    OrderID string `json:"order_id"`
+}
+
+func (e *OrderCreatedEvent) Name() string {
+    return "order.created"  // SAME name = cross-service compatible!
+}
+
+func init() {
+    goevent.RegisterEventType(&OrderCreatedEvent{})
+}
+
+type EmailListener struct{}
+
+func (l *EmailListener) EventName() string {
+    return "order.created"
+}
+
+func (l *EmailListener) OnEvent(event goevent.Event) error {
+    e := event.(*OrderCreatedEvent)  // ✅ Type-safe!
+    sendEmail(e.OrderID)
+    return nil
+}
+```
+
+**How it works:** Both services register with `event.Name()` = `"order.created"`, so deserialization works across services even though they're different packages/codebases!
+
 ### Redis Configuration Options
 
 ```go
@@ -219,6 +285,17 @@ func init() {
     goevent.RegisterEventType(&UserCreatedEvent{})
     goevent.RegisterEventType(&OrderProcessedEvent{})
     goevent.RegisterEventType(&PaymentReceivedEvent{})
+}
+```
+
+**How it works:** `RegisterEventType()` uses `event.Name()` as the registry key. This enables **cross-service communication** - different services can have the same logical event with different package names, as long as they return the same value from `Name()`.
+
+**For custom type names or versioning:**
+```go
+func init() {
+    // Use custom type name (e.g., for versioning)
+    goevent.RegisterEventTypeAs("order.created.v1", &OrderCreatedEventV1{})
+    goevent.RegisterEventTypeAs("order.created.v2", &OrderCreatedEventV2{})
 }
 ```
 
@@ -505,7 +582,11 @@ type RedisConfig struct {
 ### Event Registration (Redis Driver)
 
 ```go
-func RegisterEventType(event Event)  // Register event type for deserialization
+// Register using event.Name() as key (recommended for cross-service)
+func RegisterEventType(event Event)
+
+// Register with custom type name (for versioning, custom names)
+func RegisterEventTypeAs(typeName string, event Event)
 ```
 
 ### DispatchHandle Methods

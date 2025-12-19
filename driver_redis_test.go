@@ -10,21 +10,52 @@ import (
 
 // TestRedisEvent is a test event type for Redis testing
 type TestRedisEvent struct {
-	EventName string         `json:"event_name"`
-	Data      map[string]any `json:"data"`
+	EventNameValue string         `json:"event_name"`
+	Data           map[string]any `json:"data"`
 }
 
 func (e *TestRedisEvent) Name() string {
-	return e.EventName
+	// Return EventNameValue if set, otherwise return a default
+	if e.EventNameValue != "" {
+		return e.EventNameValue
+	}
+	return "test.redis" // Default for registration
 }
 
 func (e *TestRedisEvent) Payload() map[string]any {
 	return e.Data
 }
 
+// Separate event types for different tests
+type TestAsyncEvent struct {
+	Data map[string]any `json:"data"`
+}
+
+func (e *TestAsyncEvent) Name() string {
+	return "test.async"
+}
+
+func (e *TestAsyncEvent) Payload() map[string]any {
+	return e.Data
+}
+
+type TestMultiEvent struct {
+	Data map[string]any `json:"data"`
+}
+
+func (e *TestMultiEvent) Name() string {
+	return "multi.event"
+}
+
+func (e *TestMultiEvent) Payload() map[string]any {
+	return e.Data
+}
+
 func init() {
 	// Register test event types
 	RegisterEventType(&TestRedisEvent{})
+	RegisterEventType(&TestAsyncEvent{})
+	RegisterEventType(&TestMultiEvent{})
 }
 
 func TestRedisDriver_Connection(t *testing.T) {
@@ -86,8 +117,7 @@ func TestRedisDriver_PublishSubscribe(t *testing.T) {
 
 	// Create and publish event
 	testEvent := &TestRedisEvent{
-		EventName: "test.redis",
-		Data:      map[string]any{"key": "value"},
+		Data: map[string]any{"key": "value"},
 	}
 	handle := &DispatchHandle{
 		id:      generateHandleID(),
@@ -137,9 +167,8 @@ func TestRedisDriver_AsyncHandler(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Publish
-	testEvent := &TestRedisEvent{
-		EventName: "test.async",
-		Data:      map[string]any{},
+	testEvent := &TestAsyncEvent{
+		Data: map[string]any{},
 	}
 	handle := &DispatchHandle{
 		id:      generateHandleID(),
@@ -195,9 +224,8 @@ func TestRedisDriver_MultipleHandlers(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Publish
-	testEvent := &TestRedisEvent{
-		EventName: "multi.event",
-		Data:      map[string]any{},
+	testEvent := &TestMultiEvent{
+		Data: map[string]any{},
 	}
 	handle := &DispatchHandle{
 		id:      generateHandleID(),
@@ -266,8 +294,8 @@ func TestRedisDriver_MaxEventSize(t *testing.T) {
 	}
 
 	testEvent := &TestRedisEvent{
-		EventName: "test.large",
-		Data:      largeData,
+		EventNameValue: "test.large",
+		Data:           largeData,
 	}
 	handle := &DispatchHandle{
 		id:      generateHandleID(),
@@ -351,8 +379,7 @@ func TestRedisDriver_Close(t *testing.T) {
 
 	// Verify we can't publish after close
 	testEvent := &TestRedisEvent{
-		EventName: "test.close",
-		Data:      map[string]any{},
+		Data: map[string]any{},
 	}
 	handle := &DispatchHandle{
 		id:      generateHandleID(),

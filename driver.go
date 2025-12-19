@@ -11,6 +11,11 @@ type Driver interface {
 	// isAsync indicates if the handler should execute asynchronously
 	Subscribe(eventName string, handler EventHandler, isAsync bool) error
 
+	// Unsubscribe removes all handlers for a specific event
+	// This is idempotent - calling it multiple times for the same event is safe
+	// Returns nil if the event was not subscribed or if unsubscribe succeeded
+	Unsubscribe(eventName string) error
+
 	// Wait blocks until all pending async operations complete
 	// For memory driver: waits for all async handlers
 	// For Redis driver: waits for local async handlers only

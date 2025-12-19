@@ -266,3 +266,149 @@ func BenchmarkAsyncDispatch(b *testing.B) {
 		handle.Wait()
 	}
 }
+
+func TestUnregisterListenersForEvent(t *testing.T) {
+	evt := New()
+	listener := &testSyncListener{}
+
+	evt.RegisterListener(listener)
+
+	// Dispatch - listener should be called
+	evt.Dispatch(&TestEvent{data: "before unregister"})
+	if !listener.called {
+		t.Error("Listener was not called before unregister")
+	}
+
+	// Unregister
+	if err := evt.UnregisterListenersForEvent("test.event"); err != nil {
+		t.Fatalf("UnregisterListenersForEvent failed: %v", err)
+	}
+
+	// Dispatch again - listener should NOT be called
+	listener.called = false
+	listener.data = ""
+	evt.Dispatch(&TestEvent{data: "after unregister"})
+
+	if listener.called {
+		t.Error("Listener was called after unregister")
+	}
+
+	if listener.data != "" {
+		t.Error("Listener data was modified after unregister")
+	}
+}
+
+func TestUnregisterListenersForEvent_NonExistent(t *testing.T) {
+	evt := New()
+
+	// Unregister event that was never registered - should be idempotent
+	if err := evt.UnregisterListenersForEvent("never.registered"); err != nil {
+		t.Errorf("UnregisterListenersForEvent for non-existent event returned error: %v", err)
+	}
+}
+
+func TestUnregisterListenersForEvent_Async(t *testing.T) {
+	evt := New()
+	listener := &testAsyncListener{}
+
+	evt.RegisterListener(listener)
+
+	// Dispatch - listener should be called
+	handle := evt.Dispatch(&TestEvent{data: "before unregister"})
+	handle.Wait()
+
+	if !listener.called {
+		t.Error("Async listener was not called before unregister")
+	}
+
+	// Unregister
+	if err := evt.UnregisterListenersForEvent("test.event"); err != nil {
+		t.Fatalf("UnregisterListenersForEvent failed: %v", err)
+	}
+
+	// Dispatch again - listener should NOT be called
+	listener.called = false
+	listener.data = ""
+	handle2 := evt.Dispatch(&TestEvent{data: "after unregister"})
+	handle2.Wait()
+
+	if listener.called {
+		t.Error("Async listener was called after unregister")
+	}
+
+	if listener.data != "" {
+		t.Error("Async listener data was modified after unregister")
+	}
+}
+
+func TestUnregisterListenersForEvent_Multiple(t *testing.T) {
+	evt := New()
+	syncListener := &testSyncListener{}
+	asyncListener := &testAsyncListener{}
+
+	evt.RegisterListener(syncListener, asyncListener)
+
+	// Dispatch - both should be called
+	handle := evt.Dispatch(&TestEvent{data: "before unregister"})
+	handle.Wait()
+
+	if !syncListener.called || !asyncListener.called {
+		t.Error("Not all listeners were called before unregister")
+	}
+
+	// Unregister
+	if err := evt.UnregisterListenersForEvent("test.event"); err != nil {
+		t.Fatalf("UnregisterListenersForEvent failed: %v", err)
+	}
+
+	// Dispatch again - neither should be called
+	syncListener.called = false
+	asyncListener.called = false
+	handle2 := evt.Dispatch(&TestEvent{data: "after unregister"})
+	handle2.Wait()
+
+	if syncListener.called || asyncListener.called {
+		t.Error("Listeners were called after unregister")
+	}
+}
+
+func TestUnregisterListenersForEvent_Reregister(t *testing.T) {
+	evt := New()
+	listener := &testSyncListener{}
+
+	// Register
+	evt.RegisterListener(listener)
+
+	// Dispatch - should be called
+	evt.Dispatch(&TestEvent{data: "first"})
+	if !listener.called {
+		t.Error("Listener was not called on first dispatch")
+	}
+
+	// Unregister
+	if err := evt.UnregisterListenersForEvent("test.event"); err != nil {
+		t.Fatalf("UnregisterListenersForEvent failed: %v", err)
+	}
+
+	// Dispatch - should NOT be called
+	listener.called = false
+	evt.Dispatch(&TestEvent{data: "second"})
+	if listener.called {
+		t.Error("Listener was called after unregister")
+	}
+
+	// Re-register
+	listener.called = false
+	listener.data = ""
+	evt.RegisterListener(listener)
+
+	// Dispatch - should be called again
+	evt.Dispatch(&TestEvent{data: "third"})
+	if !listener.called {
+		t.Error("Listener was not called after re-registration")
+	}
+
+	if listener.data != "third" {
+		t.Errorf("Expected data 'third', got '%s'", listener.data)
+	}
+}

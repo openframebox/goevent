@@ -207,6 +207,31 @@ func (rd *redisDriver) Subscribe(eventName string, handler EventHandler, isAsync
 	return nil
 }
 
+// Unsubscribe removes all handlers for a specific event
+// This is idempotent - calling it multiple times for the same event is safe
+func (rd *redisDriver) Unsubscribe(eventName string) error {
+	rd.subsMu.Lock()
+	sub, exists := rd.subscriptions[eventName]
+	if !exists {
+		rd.subsMu.Unlock()
+		return nil // Already unsubscribed or never subscribed
+	}
+
+	// Remove from tracking
+	delete(rd.subscriptions, eventName)
+	rd.subsMu.Unlock()
+
+	// Cancel the message processing goroutine
+	sub.cancel()
+
+	// Close the Redis pubsub subscription
+	if err := sub.pubsub.Close(); err != nil {
+		return fmt.Errorf("failed to close Redis subscription for %s: %w", eventName, err)
+	}
+
+	return nil
+}
+
 // processMessages processes incoming messages for a subscription
 func (rd *redisDriver) processMessages(ctx context.Context, sub *redisSubscription) {
 	ch := sub.pubsub.Channel()

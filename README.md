@@ -500,6 +500,82 @@ func (l *Listener) OnEvent(event goevent.Event) error {
 }
 ```
 
+### Unsubscribing Listeners
+
+You can remove all listeners for a specific event at runtime using `UnregisterListenersForEvent()`:
+
+```go
+// Register listeners
+evt.RegisterListener(&EmailListener{})
+evt.RegisterListener(&SMSListener{})
+
+// Dispatch events - both listeners handle them
+evt.Dispatch(&UserCreatedEvent{})
+
+// Later: disable all listeners for this event
+evt.UnregisterListenersForEvent("user.created")
+
+// Dispatch again - no listeners will handle it
+evt.Dispatch(&UserCreatedEvent{})  // Nothing happens
+```
+
+**Common use cases:**
+- **Feature Flags**: Dynamically enable/disable event-driven features
+- **Maintenance Mode**: Temporarily disable certain handlers during maintenance
+- **Testing**: Clean up listeners between test cases
+- **Dynamic Configuration**: Enable/disable integrations at runtime
+
+```go
+// Example: Feature flag integration
+func UpdateFeatureFlags(flags map[string]bool) {
+    if !flags["email_notifications"] {
+        evt.UnregisterListenersForEvent("user.created")
+        evt.UnregisterListenersForEvent("order.created")
+    }
+
+    if !flags["analytics"] {
+        evt.UnregisterListenersForEvent("page.viewed")
+        evt.UnregisterListenersForEvent("button.clicked")
+    }
+}
+```
+
+**Important notes:**
+- ✅ **Thread-safe**: Can be called while events are being dispatched
+- ✅ **Idempotent**: Safe to call multiple times for the same event
+- ✅ **Removes ALL listeners**: All listeners for the specified event are removed
+- ✅ **Re-registerable**: You can register listeners again after unsubscribing
+
+```go
+// Idempotent - safe to call multiple times
+evt.UnregisterListenersForEvent("user.created")
+evt.UnregisterListenersForEvent("user.created")  // No error
+
+// Non-existent events - no error
+evt.UnregisterListenersForEvent("never.registered")  // No error
+
+// Re-register after unsubscribe
+evt.UnregisterListenersForEvent("user.created")
+evt.RegisterListener(&NewEmailListener{})  // Works fine
+evt.Dispatch(&UserCreatedEvent{})  // NewEmailListener handles it
+```
+
+**Works with both drivers:**
+```go
+// Memory driver
+evt := goevent.New()
+evt.RegisterListener(&Listener{})
+evt.UnregisterListenersForEvent("my.event")
+
+// Redis driver
+evt := goevent.NewWithConfig(&goevent.Config{
+    Driver: goevent.DriverRedis,
+    Redis:  &goevent.RedisConfig{Addr: "localhost:6379"},
+})
+evt.RegisterListener(&Listener{})
+evt.UnregisterListenersForEvent("my.event")  // Closes Redis subscription
+```
+
 ## API Reference
 
 ### Core Types
@@ -534,6 +610,7 @@ func NewWithConfig(cfg *Config) *GoEvent  // Creates with custom driver
 
 // Core methods
 func (ge *GoEvent) RegisterListener(listeners ...Listener)
+func (ge *GoEvent) UnregisterListenersForEvent(eventName string) error  // Remove all listeners for an event
 func (ge *GoEvent) Dispatch(event Event) *DispatchHandle
 func (ge *GoEvent) Wait()
 func (ge *GoEvent) GetErrors() []*EventError

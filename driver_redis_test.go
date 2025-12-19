@@ -394,6 +394,170 @@ func TestRedisDriver_Close(t *testing.T) {
 	}
 }
 
+func TestRedisDriver_Unsubscribe(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+
+	config := &RedisConfig{
+		Addr: mr.Addr(),
+	}
+
+	driver, err := newRedisDriver(config)
+	if err != nil {
+		t.Fatalf("Failed to create Redis driver: %v", err)
+	}
+	defer driver.Close()
+
+	called := false
+	handler := func(handle *DispatchHandle, event Event) {
+		called = true
+	}
+
+	// Subscribe
+	if err := driver.Subscribe("test.redis", handler, false); err != nil {
+		t.Fatalf("Subscribe failed: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Publish - should be called
+	testEvent := &TestRedisEvent{
+		Data: map[string]any{},
+	}
+	handle := &DispatchHandle{
+		id:      generateHandleID(),
+		isLocal: false,
+		errors:  make([]*EventError, 0),
+		done:    make(chan struct{}),
+	}
+
+	if err := driver.Publish("test.redis", handle, testEvent); err != nil {
+		t.Fatalf("Publish failed: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	if !called {
+		t.Error("Handler was not called before unsubscribe")
+	}
+
+	// Unsubscribe
+	if err := driver.Unsubscribe("test.redis"); err != nil {
+		t.Fatalf("Unsubscribe failed: %v", err)
+	}
+
+	// Publish again - should NOT be called
+	called = false
+	handle2 := &DispatchHandle{
+		id:      generateHandleID(),
+		isLocal: false,
+		errors:  make([]*EventError, 0),
+		done:    make(chan struct{}),
+	}
+
+	if err := driver.Publish("test.redis", handle2, testEvent); err != nil {
+		t.Fatalf("Publish failed: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	if called {
+		t.Error("Handler was called after unsubscribe")
+	}
+}
+
+func TestRedisDriver_UnsubscribeNonExistent(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+
+	config := &RedisConfig{
+		Addr: mr.Addr(),
+	}
+
+	driver, err := newRedisDriver(config)
+	if err != nil {
+		t.Fatalf("Failed to create Redis driver: %v", err)
+	}
+	defer driver.Close()
+
+	// Unsubscribe event that was never subscribed - should be idempotent
+	if err := driver.Unsubscribe("never.subscribed"); err != nil {
+		t.Errorf("Unsubscribe of non-existent event returned error: %v", err)
+	}
+}
+
+func TestRedisDriver_UnsubscribeMultipleHandlers(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+
+	config := &RedisConfig{
+		Addr: mr.Addr(),
+	}
+
+	driver, err := newRedisDriver(config)
+	if err != nil {
+		t.Fatalf("Failed to create Redis driver: %v", err)
+	}
+	defer driver.Close()
+
+	call1 := false
+	call2 := false
+
+	handler1 := func(handle *DispatchHandle, event Event) {
+		call1 = true
+	}
+
+	handler2 := func(handle *DispatchHandle, event Event) {
+		call2 = true
+	}
+
+	// Subscribe both handlers
+	driver.Subscribe("multi.event", handler1, false)
+	driver.Subscribe("multi.event", handler2, false)
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Publish - both should be called
+	testEvent := &TestMultiEvent{
+		Data: map[string]any{},
+	}
+	handle := &DispatchHandle{
+		id:      generateHandleID(),
+		isLocal: false,
+		errors:  make([]*EventError, 0),
+		done:    make(chan struct{}),
+	}
+
+	driver.Publish("multi.event", handle, testEvent)
+	time.Sleep(100 * time.Millisecond)
+
+	if !call1 || !call2 {
+		t.Error("Not all handlers were called before unsubscribe")
+	}
+
+	// Unsubscribe
+	if err := driver.Unsubscribe("multi.event"); err != nil {
+		t.Fatalf("Unsubscribe failed: %v", err)
+	}
+
+	// Publish again - neither should be called
+	call1 = false
+	call2 = false
+	handle2 := &DispatchHandle{
+		id:      generateHandleID(),
+		isLocal: false,
+		errors:  make([]*EventError, 0),
+		done:    make(chan struct{}),
+	}
+
+	driver.Publish("multi.event", handle2, testEvent)
+	time.Sleep(100 * time.Millisecond)
+
+	if call1 || call2 {
+		t.Error("Handlers were called after unsubscribe")
+	}
+}
+
 // invalidEvent is an event type that cannot be JSON serialized
 type invalidEvent struct {
 	Ch chan struct{} // Channels cannot be JSON serialized

@@ -137,6 +137,23 @@ func (ge *GoEvent) registerSingleListener(listener Listener) {
 	}
 }
 
+// UnregisterListenersForEvent removes all listeners for a specific event
+// After calling this, no listeners will handle events with this name
+// This is thread-safe and can be called while events are being dispatched
+//
+// Example:
+//
+//	evt.UnregisterListenersForEvent("user.created")
+func (ge *GoEvent) UnregisterListenersForEvent(eventName string) error {
+	// Update async listener count
+	ge.asyncListenersMu.Lock()
+	delete(ge.asyncListeners, eventName)
+	ge.asyncListenersMu.Unlock()
+
+	// Delegate to driver
+	return ge.driver.Unsubscribe(eventName)
+}
+
 // Dispatch publishes an event to all registered listeners and returns a handle
 // The handle can be used to wait for this specific dispatch to complete
 // and retrieve errors that occurred during this dispatch
